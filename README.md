@@ -1,73 +1,54 @@
-# Binance Market Dashboard
+# OBSIDIAN · Market Terminal
 
-A Python Streamlit dashboard for scanning Binance markets and analyzing candlestick data. It reads live ticker data through `binancedata.py`, saves scan history to a local SQLite database (`data/binance_history.sqlite3`), and offers moving-average charts plus persistent alert rules.
+A premium dark-themed market terminal built on the existing **Python / Streamlit / Plotly / SQLite** stack. It reads live Binance ticker and candle data through `binancedata.py`, stores scan history locally, and adds a Gemini-powered AI assistant.
+
+The interface follows the Obsidian Chrome identity:
+
+- **Obsidian Black** `#080808` — application and navigation surfaces.
+- **Chrome Silver** `#CDCBCA` — typography, borders and secondary UI.
+- **Laser Crimson** `#D41514` — active navigation, primary actions and accents.
+
+Positive/negative market values use conventional green/red indicators, separate from the brand accent.
 
 ## Requirements
 
 - Python 3.9+
-- Python packages listed in `requirements.txt` (pandas, streamlit, plotly, requests, certifi, python-dotenv)
+- Packages in `requirements.txt` (pandas, streamlit, plotly, requests, certifi, python-dotenv)
 
 ## Setup
 
-### 1. Clone or open the repository
-
 ```bash
-cd project1
-```
-
-### 2. Create and activate a virtual environment
-
-macOS / Linux:
-
-```bash
-python3 -m venv .venv
-source .venv/bin/activate
-```
-
-Windows (PowerShell):
-
-```powershell
-py -m venv .venv
-.venv\Scripts\Activate.ps1
-```
-
-### 3. Install dependencies
-
-```bash
+python -m venv .venv
+.venv\Scripts\Activate.ps1      # Windows PowerShell
 pip install -r requirements.txt
 ```
 
-### 4. Configure
-
-Copy the example environment file and fill in your values:
+Copy the environment template and fill in your values:
 
 ```bash
 cp .env.example .env
 ```
 
-Edit `.env`:
-
 ```env
-# Binance (public market data needs no key; --account needs demo/live keys)
 BINANCE_API_KEY=your-binance-key-here
 BINANCE_API_SECRET=your-binance-secret-here
 BINANCE_ENV=demo
 BINANCE_MARKET=futures
 
-# DNS handling for Binance domains: auto (retry over DoH after a failed connection),
-# doh (start with DoH), or system (never use DoH).
+# Optional: Gemini API key for the AI Trading Assistant
+GEMINI_API_KEY=your-gemini-key-here
+# Model override; defaults to gemini-3.5-flash with automatic fallbacks
+GEMINI_MODEL=gemini-3.5-flash
+
+# Optional DNS handling
 # BINANCE_DNS_MODE=auto
 # BINANCE_DOH_URL=https://cloudflare-dns.com/dns-query
-
-# Optional: where the dashboard stores its past-records database
 # BINANCE_HISTORY_DB=data/binance_history.sqlite3
 ```
 
-Keep `.env` secret and never commit it to Git.
+Keep `.env` secret and never commit it.
 
-## Usage
-
-Run the dashboard:
+## Run
 
 ```bash
 python -m streamlit run binance_dashboard.py
@@ -75,35 +56,43 @@ python -m streamlit run binance_dashboard.py
 
 The browser opens at `http://localhost:8501`.
 
-`binance_dashboard.py` is a Python web frontend for `binancedata.py`. It has five tabs:
+## Navigation
 
-| Tab | What it shows |
+The app uses a horizontal top navigation bar with a sticky Obsidian header:
+
+| Page | What it shows |
 | --- | --- |
-| **Scanner** | Live 24h gainers, losers, biggest moves and highest-volume pairs, with CSV export. |
-| **Past records** | Every scan is saved to a local SQLite database (`data/binance_history.sqlite3`). Filter by quote, symbol and time range, overlay several symbols (absolute or % change) with a moving average, and export to CSV. |
-| **Moving average** | Candlestick chart for any symbol with configurable SMA/EMA overlays (7–200 periods), volume bars, distance-to-average metrics and a bullish/bearish read-out. |
-| **Alerts** | Persistent MA-cross, RSI-level and volume-spike rules, checked on every refresh; each trigger is timestamped in a log you can export. |
-| **Account** | Signed balance lookup for the selected market/environment, with an estimated value in the quote asset. Keys come from `BINANCE_API_KEY` / `BINANCE_API_SECRET` or the form. |
+| **Dashboard** | Portfolio summary cards, market breadth, volume leaders, top gainers/losers, watchlist, open positions and recent scans. |
+| **Markets** | Live 24h gainers, losers, biggest moves and highest-volume pairs, with CSV export. |
+| **Trade** | Candlestick chart with SMA/EMA overlays, volume, trend readout, market snapshot and a clearly labelled order-ticket preview. |
+| **Watchlist** | Session watchlist with live prices, 24h changes and a comparison chart. |
+| **Portfolio** | Signed balance lookup for the selected market/environment, with estimated values in the quote asset. |
+| **Orders** | Honest empty state — no order execution backend is connected in this build. |
+| **Records** | Every scan is saved to a local SQLite database (`data/binance_history.sqlite3`). Filter, overlay, chart and export historical prices. |
+| **Alerts** | Persistent MA-cross, RSI-level and volume-spike rules with a timestamped trigger log. |
+| **News** | Honest empty state — no news feed is connected in this build. |
+| **Chat** | Gemini-powered AI Trading Assistant with conversation history and an editable system prompt. |
 
-Public market data needs no API key; use the sidebar to pick market, environment, quote asset, minimum volume and how many rows to display.
+The top-right icons provide global symbol search, notifications, the AI assistant, profile/environment info and a dark/light theme switcher.
 
 ## Notes
 
-- **Auto-refresh** reruns the data every 30–45 seconds (sidebar slider) while the tab stays open. Use *Scan market* for an immediate refresh.
-- Each scan stores up to 250 of the most liquid pairs, but auto-refresh only records at most every few minutes (configurable, default 5) so the history database does not flood. Turning off *Save scans to past records* stops saving entirely.
-- Alert rules are evaluated on each refresh and stored in the same database; triggers are de-duplicated per candle. *Volume spike* rules only fire in the *Above* direction.
-- History location can be changed with `BINANCE_HISTORY_DB`.
+- **Auto-refresh** reruns the data every 30–45 seconds (set in the top **Refresh** control) while the page stays open. Use **Scan Market** for an immediate refresh.
+- Each scan stores up to 250 of the most liquid pairs, but auto-refresh records at most every few minutes (configurable, default 5).
+- Alert rules are evaluated on each refresh and stored in the same database; triggers are de-duplicated per candle.
 - The moving-average chart downloads candles from Binance directly; the demo environment is used by default and falls back to live public candles if demo data is unavailable.
+- Portfolio values populate only after balances are loaded in **Portfolio**; the dashboard does not invent balances or positions.
+- Order placement and news are not implemented because the existing backend does not provide those APIs. Their pages show clear empty states rather than simulated data.
 
 ## Troubleshooting
 
-**`SSL: CERTIFICATE_VERIFY_FAILED`** — the scripts load CA certificates from `certifi`, so make sure dependencies are installed in the active virtual environment. If it still fails, reinstall:
+**`SSL: CERTIFICATE_VERIFY_FAILED`** — make sure dependencies are installed in the active virtual environment, then reinstall:
 
 ```bash
 pip install --force-reinstall certifi
 ```
 
-**`Binance request timed out` / `Network error while contacting Binance`** — some ISPs answer DNS for Binance domains with dead addresses, so connections hang until the timeout. `binancedata.py` detects that and re-resolves the host over DNS-over-HTTPS automatically. Choose the behaviour with `BINANCE_DNS_MODE`:
+**`Binance request timed out` / `Network error while contacting Binance`** — some ISPs return dead DNS answers for Binance domains. `binancedata.py` detects this and retries over DNS-over-HTTPS. Choose the behaviour with `BINANCE_DNS_MODE`:
 
 | Value | Behaviour |
 | --- | --- |
@@ -115,5 +104,3 @@ pip install --force-reinstall certifi
 BINANCE_DNS_MODE=doh
 # BINANCE_DOH_URL=https://cloudflare-dns.com/dns-query
 ```
-
-The dashboard shows a “DNS fallback in use” note when this happens, keeps the last successful scan on screen if a refresh fails, and offers a **Retry now** button.

@@ -572,6 +572,22 @@ def trend_readout(close: float, averages: dict[str, float]) -> tuple[str, str]:
 # --------------------------------------------------------------------------- #
 # Charts
 # --------------------------------------------------------------------------- #
+def _apply_chart_theme(fig: go.Figure) -> go.Figure:
+    """Apply the Obsidian chart theme to a Plotly figure."""
+    dark = st.session_state.get("theme", "dark") == "dark"
+    text = "#CDCBCA" if dark else "#1a1a1a"
+    grid = "#232323" if dark else "#e5e5e5"
+    fig.update_layout(
+        template="plotly_dark" if dark else "plotly_white",
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)",
+        font=dict(color=text),
+    )
+    fig.update_xaxes(gridcolor=grid, zerolinecolor=grid)
+    fig.update_yaxes(gridcolor=grid, zerolinecolor=grid)
+    return fig
+
+
 def make_movers_chart(df: pd.DataFrame, rows: int = 10) -> go.Figure:
     gainers = df.nlargest(rows, "priceChangePercent")
     losers = df.nsmallest(rows, "priceChangePercent")
@@ -594,13 +610,12 @@ def make_movers_chart(df: pd.DataFrame, rows: int = 10) -> go.Figure:
         )
     )
     fig.update_layout(
-        template="plotly_white",
         height=max(320, 26 * len(movers)),
         margin=dict(l=10, r=10, t=10, b=10),
         xaxis_title="24h change (%)",
         yaxis_title=None,
     )
-    return fig
+    return _apply_chart_theme(fig)
 
 
 def make_candles_chart(
@@ -655,7 +670,6 @@ def make_candles_chart(
         col=1,
     )
     fig.update_layout(
-        template="plotly_white",
         height=640,
         margin=dict(l=10, r=10, t=34, b=10),
         xaxis_rangeslider_visible=False,
@@ -665,7 +679,7 @@ def make_candles_chart(
     )
     fig.update_yaxes(title_text="Price", row=1, col=1)
     fig.update_yaxes(title_text="Volume", row=2, col=1)
-    return fig
+    return _apply_chart_theme(fig)
 
 
 def make_records_chart(
@@ -722,14 +736,13 @@ def make_records_chart(
 
     fig.update_layout(
         title="Recorded prices" + (" — % change" if normalize else ""),
-        template="plotly_white",
         height=460,
         margin=dict(l=10, r=10, t=48, b=10),
         hovermode="x unified",
         legend=dict(orientation="h", yanchor="bottom", y=1.02, x=0),
         yaxis_title="% change since first record" if normalize else "Price",
     )
-    return fig
+    return _apply_chart_theme(fig)
 
 
 # --------------------------------------------------------------------------- #
@@ -1546,99 +1559,881 @@ def render_account(
 
 
 # --------------------------------------------------------------------------- #
+# Gemini chat helper
+# --------------------------------------------------------------------------- #
+
+
+def gemini_chat(user_message: str, system_prompt: str = "") -> str:
+    api_key = os.getenv("GEMINI_API_KEY")
+    if not api_key:
+        return "Gemini API key not set — add GEMINI_API_KEY to .env to use the chat assistant."
+
+    preferred = os.getenv("GEMINI_MODEL", "").strip()
+    models: list[str] = []
+    if preferred:
+        models.append(preferred)
+    models.extend(
+        [
+            "gemini-3.5-flash",
+            "gemini-3.8-flash",
+            "gemini-3.1-flash-lite",
+            "gemini-flash-latest",
+        ]
+    )
+
+    payload: dict = {
+        "contents": [{"role": "user", "parts": [{"text": user_message}]}],
+        "generationConfig": {"maxOutputTokens": 2048},
+    }
+    if system_prompt.strip():
+        payload["systemInstruction"] = {"parts": [{"text": system_prompt.strip()}]}
+
+    last_error = "unknown error"
+    for model in dict.fromkeys(models):
+        url = (
+            "https://generativelanguage.googleapis.com/v1beta/models/"
+            f"{model}:generateContent"
+        )
+        try:
+            resp = requests.post(
+                url,
+                params={"key": api_key},
+                headers={"Content-Type": "application/json"},
+                json=payload,
+                timeout=60,
+            )
+            if resp.status_code in (404, 429, 503):
+                last_error = f"{model}: HTTP {resp.status_code}"
+                continue
+            if resp.status_code in (400, 401, 403):
+                return (
+                    f"Gemini API error {resp.status_code}: "
+                    f"{resp.text[:300]}"
+                )
+            resp.raise_for_status()
+            data = resp.json()
+            candidates = data.get("candidates", [{}])
+            parts = candidates[0].get("content", {}).get("parts", [])
+            text = "".join(part.get("text", "") for part in parts).strip()
+            if text:
+                return text
+            last_error = f"{model}: empty response"
+        except requests.RequestException as exc:
+            last_error = f"{model}: {exc}"
+        except Exception as exc:
+            last_error = f"{model}: {exc}"
+
+    return f"Error contacting Gemini: {last_error}"
+
+
+# --------------------------------------------------------------------------- #
+# Obsidian Chrome design system
+# --------------------------------------------------------------------------- #
+
+OBSIDIAN_CSS = """
+<style>
+  :root {
+    --obs-bg: @@BG@@;
+    --obs-surface: @@SURFACE@@;
+    --obs-surface-2: @@SURFACE2@@;
+    --obs-border: @@BORDER@@;
+    --obs-text: @@TEXT@@;
+    --obs-muted: @@MUTED@@;
+    --obs-accent: #D41514;
+    --obs-accent-hover: #ff2b2a;
+    --obs-positive: @@POSITIVE@@;
+    --obs-negative: @@NEGATIVE@@;
+    --obs-radius: 10px;
+  }
+  html, body, [data-testid="stAppViewContainer"], .stApp {
+    background: var(--obs-bg) !important;
+    color: var(--obs-text) !important;
+    font-family: 'Inter', 'Segoe UI', sans-serif !important;
+  }
+  /* Hide Streamlit's fixed header: it overlays the top nav and intercepts clicks. */
+  [data-testid="stHeader"], [data-testid="stToolbar"], [data-testid="stDecoration"] {
+    display: none !important;
+  }
+  .block-container { padding-top: 0.25rem !important; padding-bottom: 2rem !important; max-width: 1600px; }
+  h1, h2, h3, h4, h5, h6 { color: var(--obs-text) !important; letter-spacing: -0.02em; }
+  p, span, label, .stMarkdown, .stCaption, [data-testid="stCaptionContainer"] { color: var(--obs-text); }
+  [data-testid="stSidebar"] { display: none !important; }
+
+  /* Top navigation */
+  .st-key-topnav {
+    position: sticky; top: 0; z-index: 9999;
+    background: var(--obs-bg);
+    border-bottom: 1px solid var(--obs-border);
+    padding: 0.35rem 0.6rem;
+    margin: -0.25rem -0.6rem 0.75rem -0.6rem;
+  }
+  .st-key-topnav [data-testid="stHorizontalBlock"] { align-items: center; gap: 0.1rem; flex-wrap: wrap; }
+  .st-key-topnav .stButton > button {
+    background: transparent !important;
+    border: none !important;
+    color: var(--obs-muted) !important;
+    padding: 0.35rem 0.55rem !important;
+    font-size: 0.82rem !important;
+    font-weight: 600 !important;
+    border-radius: 4px !important;
+    box-shadow: none !important;
+  }
+  .st-key-topnav .stButton > button:hover {
+    color: var(--obs-text) !important;
+    background: var(--obs-surface-2) !important;
+  }
+  .st-key-topnav .stButton > button[data-testid="stBaseButton-primary"] {
+    background: transparent !important;
+    color: var(--obs-accent) !important;
+    border: none !important;
+    border-bottom: 2px solid var(--obs-accent) !important;
+    border-radius: 0 !important;
+    box-shadow: none !important;
+  }
+  .st-key-topnav [data-testid="stTooltipIcon"] button,
+  .st-key-topnav [data-testid="stPopoverButton"] {
+    background: transparent !important;
+    border: none !important;
+    color: var(--obs-muted) !important;
+    font-size: 1.05rem !important;
+    padding: 0.35rem 0.55rem !important;
+    border-radius: 4px !important;
+    box-shadow: none !important;
+  }
+  .st-key-topnav [data-testid="stTooltipIcon"] button:hover,
+  .st-key-topnav [data-testid="stPopoverButton"]:hover {
+    color: var(--obs-accent) !important;
+    background: var(--obs-surface-2) !important;
+  }
+  .st-key-topnav [data-testid="stPopoverButton"] [data-testid="stIconMaterial"] {
+    display: none !important;
+  }
+  .obs-brand {
+    display: flex; align-items: center; gap: 0.45rem;
+    font-weight: 900; letter-spacing: 0.14em; font-size: 1.0rem;
+    color: var(--obs-text); white-space: nowrap; padding: 0.25rem 0;
+  }
+  .obs-mark { color: var(--obs-accent); font-size: 1.15rem; }
+  .obs-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--obs-accent); display: inline-block; }
+
+  /* Control bar */
+  .st-key-controlbar {
+    background: var(--obs-surface);
+    border: 1px solid var(--obs-border);
+    border-radius: var(--obs-radius);
+    padding: 0.5rem 0.75rem;
+    margin-bottom: 0.75rem;
+  }
+  .st-key-controlbar [data-testid="stHorizontalBlock"] { align-items: center; gap: 0.35rem; }
+  .st-key-controlbar .stButton > button { width: 100%; }
+  .st-key-controlbar [data-testid="stPopover"] > button {
+    background: var(--obs-surface-2) !important;
+    color: var(--obs-text) !important;
+    border: 1px solid var(--obs-border) !important;
+    border-radius: 6px !important;
+    width: 100%;
+    font-weight: 600 !important;
+  }
+  .st-key-controlbar [data-testid="stPopover"] > button:hover {
+    border-color: var(--obs-accent) !important;
+  }
+
+  /* Buttons */
+  .stButton > button {
+    background: var(--obs-surface-2) !important;
+    color: var(--obs-text) !important;
+    border: 1px solid var(--obs-border) !important;
+    border-radius: 6px !important;
+    font-weight: 600 !important;
+    transition: all 0.15s ease !important;
+  }
+  .stButton > button:hover { border-color: var(--obs-accent) !important; color: #fff !important; }
+  [data-testid="stBaseButton-primary"] {
+    background: var(--obs-accent) !important;
+    color: #fff !important;
+    border-color: var(--obs-accent) !important;
+  }
+  [data-testid="stBaseButton-primary"]:hover { background: var(--obs-accent-hover) !important; }
+
+  /* Inputs */
+  .stTextInput input, .stNumberInput input, .stTextArea textarea,
+  [data-baseweb="select"] > div, [data-baseweb="input"] > div {
+    background: var(--obs-surface-2) !important;
+    color: var(--obs-text) !important;
+    border-color: var(--obs-border) !important;
+    border-radius: 6px !important;
+  }
+  .stSelectbox label, .stNumberInput label, .stTextInput label, .stTextArea label, .stMultiSelect label {
+    color: var(--obs-muted) !important; font-size: 0.78rem !important; font-weight: 600 !important;
+    text-transform: uppercase; letter-spacing: 0.05em;
+  }
+
+  /* Metrics */
+  [data-testid="stMetric"] {
+    background: var(--obs-surface);
+    border: 1px solid var(--obs-border);
+    border-radius: var(--obs-radius);
+    padding: 0.75rem 0.9rem;
+  }
+  [data-testid="stMetricValue"] {
+    color: var(--obs-text) !important;
+    font-family: 'JetBrains Mono', monospace !important;
+    font-size: 1.45rem !important;
+  }
+  [data-testid="stMetricLabel"] {
+    color: var(--obs-muted) !important;
+    font-size: 0.68rem !important;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+  }
+  [data-testid="stMetricDelta"] { font-size: 0.75rem !important; }
+
+  /* Containers */
+  [data-testid="stVerticalBlockBorderWrapper"] {
+    border-color: var(--obs-border) !important;
+    background: var(--obs-surface);
+    border-radius: var(--obs-radius);
+  }
+  [data-testid="stExpander"] {
+    border: 1px solid var(--obs-border) !important;
+    border-radius: var(--obs-radius) !important;
+    background: var(--obs-surface) !important;
+  }
+  [data-testid="stExpander"] summary { color: var(--obs-text) !important; font-weight: 600; }
+
+  /* Tabs */
+  .stTabs [data-baseweb="tab-list"] { gap: 0.25rem; border-bottom: 1px solid var(--obs-border); }
+  .stTabs [data-baseweb="tab"] {
+    background: transparent !important;
+    color: var(--obs-muted) !important;
+    border: none !important;
+    border-bottom: 2px solid transparent !important;
+    padding: 0.55rem 0.8rem !important;
+    font-weight: 600 !important;
+  }
+  .stTabs [aria-selected="true"] {
+    color: var(--obs-accent) !important;
+    border-bottom-color: var(--obs-accent) !important;
+    background: transparent !important;
+  }
+
+  /* Dataframes */
+  [data-testid="stDataFrame"] {
+    border: 1px solid var(--obs-border) !important;
+    border-radius: var(--obs-radius) !important;
+    overflow: hidden;
+  }
+
+  /* Popovers */
+  [data-testid="stPopoverBody"] {
+    background: var(--obs-surface) !important;
+    border: 1px solid var(--obs-border) !important;
+    border-radius: var(--obs-radius) !important;
+  }
+
+  /* Page title */
+  .obs-page-title {
+    font-size: 1.55rem;
+    font-weight: 800;
+    letter-spacing: -0.03em;
+    color: var(--obs-text);
+    margin: 0.25rem 0 0.1rem 0;
+  }
+  .obs-page-title .accent { color: var(--obs-accent); }
+  .obs-subtle { color: var(--obs-muted); font-size: 0.82rem; }
+
+  /* Status dot */
+  .obs-live { display:inline-block; width:7px; height:7px; border-radius:50%; background:var(--obs-positive); margin-right:6px; box-shadow:0 0 8px var(--obs-positive); }
+
+  /* Chat */
+  [data-testid="stChatMessage"] {
+    background: var(--obs-surface) !important;
+    border: 1px solid var(--obs-border) !important;
+    border-radius: var(--obs-radius) !important;
+  }
+  [data-testid="stChatInput"] textarea {
+    background: var(--obs-surface-2) !important;
+    color: var(--obs-text) !important;
+  }
+
+  /* Floating chat launcher */
+  .st-key-floatingchat {
+    position: fixed;
+    bottom: 1.25rem;
+    right: 1.25rem;
+    z-index: 9998;
+    width: auto;
+  }
+  .st-key-floatingchat .stButton > button {
+    background: var(--obs-accent) !important;
+    color: #fff !important;
+    border: none !important;
+    border-radius: 50% !important;
+    width: 3rem !important;
+    height: 3rem !important;
+    font-size: 1.3rem !important;
+    box-shadow: 0 8px 24px rgba(212, 21, 20, 0.35);
+  }
+
+  /* Responsive */
+  @media (max-width: 900px) {
+    .st-key-topnav [data-testid="stHorizontalBlock"] { gap: 0.05rem; }
+    .st-key-topnav .stButton > button { font-size: 0.72rem !important; padding: 0.3rem 0.35rem !important; }
+    .obs-brand { font-size: 0.9rem; }
+    .block-container { padding-left: 0.75rem !important; padding-right: 0.75rem !important; }
+  }
+  @media (max-width: 600px) {
+    .st-key-topnav .stButton > button { font-size: 0.65rem !important; padding: 0.25rem 0.25rem !important; }
+    .obs-brand { font-size: 0.8rem; letter-spacing: 0.08em; }
+    [data-testid="stMetricValue"] { font-size: 1.15rem !important; }
+  }
+</style>
+"""
+
+
+def inject_obsidian_css(theme: str) -> None:
+    if theme == "light":
+        values = {
+            "@@BG@@": "#f4f3f1",
+            "@@SURFACE@@": "#ffffff",
+            "@@SURFACE2@@": "#efeeec",
+            "@@BORDER@@": "#d8d6d4",
+            "@@TEXT@@": "#1a1a1a",
+            "@@MUTED@@": "#6b6b6b",
+            "@@POSITIVE@@": "#15803d",
+            "@@NEGATIVE@@": "#b91c1c",
+        }
+    else:
+        values = {
+            "@@BG@@": "#080808",
+            "@@SURFACE@@": "#0f0f0f",
+            "@@SURFACE2@@": "#161616",
+            "@@BORDER@@": "#2a2a2a",
+            "@@TEXT@@": "#CDCBCA",
+            "@@MUTED@@": "#8b8987",
+            "@@POSITIVE@@": "#22c55e",
+            "@@NEGATIVE@@": "#ef4444",
+        }
+    css = OBSIDIAN_CSS
+    for key, value in values.items():
+        css = css.replace(key, value)
+    st.markdown(css, unsafe_allow_html=True)
+
+
+def _portfolio_summary(
+    result: dict | None, snapshot: pd.DataFrame | None, quote: str
+) -> tuple[float | None, float | None]:
+    if not result or "rows" not in result:
+        return None, None
+    balances = pd.DataFrame(result["rows"])
+    if balances.empty:
+        return 0.0, 0.0
+    prices: dict[str, float] = {}
+    if snapshot is not None and not snapshot.empty:
+        prices = {
+            str(symbol): float(price)
+            for symbol, price in zip(snapshot["symbol"], snapshot["lastPrice"])
+        }
+    total = 0.0
+    available = 0.0
+    for _, row in balances.iterrows():
+        asset = str(row.get("asset") or "")
+        amount = 0.0
+        for column in ("free", "locked", "balance"):
+            if column in balances.columns:
+                amount += _to_number(row.get(column)) or 0.0
+        if asset == quote:
+            price = 1.0
+        else:
+            price = prices.get(f"{asset}{quote}")
+        if price is not None:
+            total += amount * price
+        if asset == quote:
+            available += amount
+    return total, available
+
+
+def render_dashboard(
+    snapshot: pd.DataFrame | None,
+    quote: str,
+    market: str,
+    environment: str,
+    top_n: int,
+) -> None:
+    st.markdown(
+        '<div class="obs-page-title">Market <span class="accent">Overview</span></div>',
+        unsafe_allow_html=True,
+    )
+    st.markdown(
+        f'<div class="obs-subtle">{market.title()} · {environment.title()} · {quote} quote</div>',
+        unsafe_allow_html=True,
+    )
+
+    if snapshot is None:
+        st.info("Market data is unavailable. Check the connection and try Scan Market.")
+        return
+
+    changes = snapshot["priceChangePercent"]
+    total_volume = snapshot["quoteVolume"].sum()
+    advancing = int((changes > 0).sum())
+    declining = int((changes < 0).sum())
+    top_gainer = snapshot.loc[snapshot["priceChangePercent"].idxmax()]
+    top_loser = snapshot.loc[snapshot["priceChangePercent"].idxmin()]
+
+    acct = st.session_state.get("account_result")
+    total_value, available = _portfolio_summary(acct, snapshot, quote)
+
+    row1 = st.columns(6)
+    row1[0].metric(
+        "Total Portfolio Value",
+        f"{format_price(total_value)} {quote}" if total_value is not None else "—",
+        help="Load account balances in Portfolio to populate this.",
+    )
+    row1[1].metric(
+        "Available Balance",
+        f"{format_price(available)} {quote}" if available is not None else "—",
+    )
+    row1[2].metric(
+        "Total P/L",
+        "—",
+        help="Cost-basis data is not provided by the current backend.",
+    )
+    row1[3].metric(
+        "Today's P/L",
+        "—",
+        help="Intraday portfolio history is not provided by the current backend.",
+    )
+    row1[4].metric("24h Market Volume", format_volume(total_volume))
+    row1[5].metric("Market Breadth", f"{advancing:,} up / {declining:,} down")
+
+    row2 = st.columns(4)
+    row2[0].metric("Pairs Tracked", f"{len(snapshot):,}")
+    row2[1].metric("Median 24h Change", f"{changes.median():+.2f}%")
+    row2[2].metric(
+        "Top Gainer", str(top_gainer["symbol"]), f"{top_gainer['priceChangePercent']:+.2f}%"
+    )
+    row2[3].metric(
+        "Top Loser", str(top_loser["symbol"]), f"{top_loser['priceChangePercent']:+.2f}%"
+    )
+
+    st.markdown("---")
+    left, right = st.columns([2, 1])
+    with left:
+        st.markdown("#### Market Leaders by Volume")
+        leaders = snapshot.nlargest(top_n, "quoteVolume").reset_index(drop=True)
+        snapshot_table(leaders)
+    with right:
+        st.markdown("#### Watchlist")
+        watch = snapshot[
+            snapshot["symbol"].isin(st.session_state.get("watchlist", []))
+        ]
+        if watch.empty:
+            st.info(
+                "No watchlist symbols in the current scan. Open Watchlist to add some."
+            )
+        else:
+            snapshot_table(watch.reset_index(drop=True))
+
+    st.markdown("---")
+    c1, c2 = st.columns(2)
+    with c1:
+        st.markdown("#### Top Gainers")
+        snapshot_table(
+            snapshot.nlargest(min(top_n, 10), "priceChangePercent").reset_index(
+                drop=True
+            )
+        )
+    with c2:
+        st.markdown("#### Top Losers")
+        snapshot_table(
+            snapshot.nsmallest(min(top_n, 10), "priceChangePercent").reset_index(
+                drop=True
+            )
+        )
+
+    st.markdown("---")
+    st.markdown("#### Open Positions")
+    if acct and "rows" in acct:
+        balances = pd.DataFrame(acct["rows"])
+        if balances.empty:
+            st.info("No non-zero balances loaded.")
+        else:
+            st.dataframe(balances.head(10), width="stretch", hide_index=True)
+    else:
+        st.info("Load account balances in Portfolio to see open positions.")
+
+    st.markdown("---")
+    st.markdown("#### Recent Scans")
+    total, latest = history_stats()
+    if total:
+        latest_text = (
+            pd.to_datetime(latest).strftime("%Y-%m-%d %H:%M:%S")
+            if latest
+            else "—"
+        )
+        st.caption(f"{total:,} records stored · latest {latest_text} UTC")
+        recent = load_history(since=datetime.now(timezone.utc) - timedelta(hours=24))
+        if not recent.empty:
+            records_table(recent.tail(10).reset_index(drop=True))
+    else:
+        st.info("No scan history yet. Scans are saved automatically when enabled.")
+
+
+def render_watchlist(snapshot: pd.DataFrame | None, quote: str) -> None:
+    st.markdown(
+        '<div class="obs-page-title">Watch<span class="accent">list</span></div>',
+        unsafe_allow_html=True,
+    )
+    st.markdown(
+        '<div class="obs-subtle">Session watchlist · live prices from the current scan</div>',
+        unsafe_allow_html=True,
+    )
+    if snapshot is None:
+        st.info("Market data is unavailable.")
+        return
+
+    all_symbols = sorted(snapshot["symbol"].tolist())
+    selected = st.multiselect(
+        "Symbols",
+        all_symbols,
+        default=st.session_state.get("watchlist", []),
+        key="watchlist_selector",
+        placeholder="Search and add symbols",
+    )
+    st.session_state.watchlist = selected
+
+    if not selected:
+        st.info("Your watchlist is empty. Add symbols above.")
+        return
+
+    view = snapshot[snapshot["symbol"].isin(selected)].copy()
+    if view.empty:
+        st.warning("Selected symbols are not in the current scan.")
+        return
+
+    snapshot_table(view.reset_index(drop=True))
+
+    fig = go.Figure(
+        go.Bar(
+            x=view["symbol"],
+            y=view["priceChangePercent"],
+            marker_color=[
+                UP_COLOR if value >= 0 else DOWN_COLOR
+                for value in view["priceChangePercent"]
+            ],
+            text=[f"{value:+.2f}%" for value in view["priceChangePercent"]],
+            textposition="outside",
+        )
+    )
+    fig.update_layout(
+        template="plotly_dark" if st.session_state.get("theme") == "dark" else "plotly_white",
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)",
+        margin=dict(l=10, r=10, t=20, b=10),
+        height=300,
+        yaxis_title="24h change (%)",
+        showlegend=False,
+    )
+    st.plotly_chart(fig, width="stretch")
+
+
+def render_trade(
+    snapshot: pd.DataFrame | None, market: str, environment: str, quote: str
+) -> None:
+    st.markdown(
+        '<div class="obs-page-title">Trading <span class="accent">Terminal</span></div>',
+        unsafe_allow_html=True,
+    )
+    st.markdown(
+        '<div class="obs-subtle">Charting and market detail · order execution is not connected in this build</div>',
+        unsafe_allow_html=True,
+    )
+    render_moving_average(snapshot, market, environment, quote)
+
+    selected_symbol = st.session_state.get("ma_symbol")
+    if snapshot is not None and selected_symbol:
+        match = snapshot[snapshot["symbol"] == selected_symbol]
+        if not match.empty:
+            row = match.iloc[0]
+            st.markdown("#### Market Snapshot")
+            snap_cols = st.columns(6)
+            snap_cols[0].metric("Last Price", format_price(row["lastPrice"]))
+            snap_cols[1].metric(
+                "24h Change", f"{row['priceChangePercent']:+.2f}%"
+            )
+            snap_cols[2].metric("24h High", format_price(row["highPrice"]))
+            snap_cols[3].metric("24h Low", format_price(row["lowPrice"]))
+            snap_cols[4].metric("24h Volume", format_volume(row["quoteVolume"]))
+            snap_cols[5].metric("Quote Asset", quote)
+
+    st.markdown("---")
+    with st.expander("Order Ticket · Preview", expanded=False):
+        st.warning(
+            "Order execution is not connected to a broker in this build. "
+            "The controls below are a UI preview and will not place a trade."
+        )
+        c1, c2, c3 = st.columns(3)
+        c1.selectbox("Side", ["Buy", "Sell"], key="trade_side")
+        c2.selectbox("Order type", ["Market", "Limit"], key="trade_order_type")
+        c3.number_input(
+            "Quantity", min_value=0.0, value=0.0, step=0.001, key="trade_quantity"
+        )
+        st.number_input(
+            "Limit price", min_value=0.0, value=0.0, step=0.01, key="trade_limit_price"
+        )
+        st.button(
+            "Preview order", disabled=True, help="Order execution not connected"
+        )
+
+
+def render_orders_page() -> None:
+    st.markdown(
+        '<div class="obs-page-title">Orders</div>', unsafe_allow_html=True
+    )
+    st.markdown(
+        '<div class="obs-subtle">Order execution and history are not connected in this build</div>',
+        unsafe_allow_html=True,
+    )
+    st.info(
+        "No order execution backend is connected. This page will populate when an order API is available."
+    )
+    empty = pd.DataFrame(
+        columns=["Time", "Symbol", "Side", "Type", "Quantity", "Price", "Status"]
+    )
+    st.markdown("#### Open Orders")
+    st.dataframe(empty, width="stretch", hide_index=True)
+    st.markdown("#### Order History")
+    st.dataframe(empty, width="stretch", hide_index=True)
+
+
+def render_news_page() -> None:
+    st.markdown(
+        '<div class="obs-page-title">Market News</div>', unsafe_allow_html=True
+    )
+    st.info(
+        "A news feed is not connected in this build. Market data remains available under Markets and Trade."
+    )
+
+
+def render_chat_page() -> None:
+    st.markdown(
+        '<div class="obs-page-title">AI Trading <span class="accent">Assistant</span></div>',
+        unsafe_allow_html=True,
+    )
+    st.markdown(
+        '<div class="obs-subtle">Ask about market structure, symbols, or the current scan</div>',
+        unsafe_allow_html=True,
+    )
+    chat_actions = st.columns([5, 1, 1])
+    if chat_actions[1].button("Clear", key="chat_clear"):
+        st.session_state.chat_history = []
+        st.rerun()
+    if chat_actions[2].button("Close", key="chat_close"):
+        st.session_state.active_page = "Dashboard"
+        st.rerun()
+    system_prompt = st.text_area(
+        "System Prompt", key="chat_system_prompt", height=90
+    )
+    for message in st.session_state.get("chat_history", []):
+        with st.chat_message(message["role"]):
+            st.markdown(message["content"])
+
+    prompt = st.chat_input("Ask the AI trading assistant…")
+    if prompt:
+        if not os.getenv("GEMINI_API_KEY"):
+            st.error(
+                "Gemini API key missing. Add GEMINI_API_KEY to .env to enable the assistant."
+            )
+            return
+        st.session_state.chat_history.append({"role": "user", "content": prompt})
+        with st.chat_message("user"):
+            st.markdown(prompt)
+        with st.chat_message("assistant"):
+            with st.spinner("Thinking…"):
+                answer = gemini_chat(prompt, system_prompt)
+            st.markdown(answer)
+        st.session_state.chat_history.append(
+            {"role": "assistant", "content": answer}
+        )
+
+
+# --------------------------------------------------------------------------- #
 # Main
 # --------------------------------------------------------------------------- #
 def main() -> None:
     st.set_page_config(
-        page_title="Binance Market Dashboard",
-        page_icon="📈",
+        page_title="OBSIDIAN · Market Terminal",
+        page_icon="◈",
         layout="wide",
+        initial_sidebar_state="collapsed",
     )
     init_db()
 
-    for key, default in (
-        ("scan_nonce", 0),
-        ("force_save", False),
-        ("account_result", None),
-        ("last_scan_at", None),
-        ("last_snapshot", None),
-        ("tick_last", None),
-    ):
+    defaults = {
+        "theme": (
+            st.query_params.get("theme")
+            if st.query_params.get("theme") in ("dark", "light")
+            else "dark"
+        ),
+        "active_page": "Dashboard",
+        "watchlist": [],
+        "chat_history": [],
+        "chat_system_prompt": (
+            "You are a helpful Binance market analyst assistant focused on the "
+            "selected market, quotes and UK market data. Answer concisely, use "
+            "numbers when available, and say you don't know if uncertain."
+        ),
+        "scan_nonce": 0,
+        "force_save": False,
+        "account_result": None,
+        "last_scan_at": None,
+        "last_snapshot": None,
+        "tick_last": None,
+    }
+    for key, default in defaults.items():
         if key not in st.session_state:
             st.session_state[key] = default
 
-    st.title("Binance Market Dashboard")
+    inject_obsidian_css(st.session_state.theme)
 
-    with st.sidebar:
-        st.header("Controls")
-        markets = ["futures", "spot"]
-        market = st.selectbox(
-            "Market",
-            markets,
-            index=markets.index(DEFAULT_MARKET) if DEFAULT_MARKET in markets else 0,
+    # ------------------------------------------------------------------ #
+    # Top navigation
+    # ------------------------------------------------------------------ #
+    nav_items = [
+        "Dashboard",
+        "Markets",
+        "Trade",
+        "Watchlist",
+        "Portfolio",
+        "Orders",
+        "Records",
+        "Alerts",
+        "News",
+    ]
+    with st.container(key="topnav"):
+        top = st.columns(
+            [2.0] + [0.9] * len(nav_items) + [0.5, 0.5, 0.5, 0.5, 0.5],
+            gap="small",
         )
-        environments = ["demo", "live"]
-        environment = st.selectbox(
-            "Environment",
-            environments,
-            index=(
-                environments.index(DEFAULT_ENVIRONMENT)
-                if DEFAULT_ENVIRONMENT in environments
-                else 0
-            ),
-            help="Public market data is identical on both for spot/futures.",
-        )
-        quote = st.selectbox("Quote asset", QUOTES, index=0)
-        min_volume = st.number_input(
-            "Minimum 24h volume",
-            min_value=0.0,
-            value=1_000_000.0,
-            step=500_000.0,
-            format="%.0f",
-        )
-        top_n = st.slider("Rows per table", min_value=5, max_value=50, value=15, step=5)
+        with top[0]:
+            st.markdown(
+                '<div class="obs-brand"><span class="obs-mark">◈</span> OBSIDIAN <span class="obs-dot"></span></div>',
+                unsafe_allow_html=True,
+            )
+        for idx, item in enumerate(nav_items, start=1):
+            with top[idx]:
+                active = st.session_state.active_page == item
+                if st.button(
+                    item,
+                    key=f"nav_{item.lower()}",
+                    type="primary" if active else "secondary",
+                ):
+                    st.session_state.active_page = item
+                    st.rerun()
+        right = len(nav_items) + 1
+        with top[right]:
+            with st.popover("🔍", help="Search markets"):
+                st.text_input(
+                    "Search symbol",
+                    placeholder="BTC, ETH, SOL…",
+                    key="global_search",
+                )
+        with top[right + 1]:
+            if st.button("🔔", key="nav_bell", help="Notifications"):
+                st.toast("No new notifications", icon="🔔")
+        with top[right + 2]:
+            if st.button("🤖", key="nav_bot", help="AI Trading Assistant"):
+                st.session_state.active_page = "Chat"
+                st.rerun()
+        with top[right + 3]:
+            with st.popover("👤", help="Profile"):
+                st.markdown(f"**Environment:** {DEFAULT_ENVIRONMENT}")
+                st.caption("Account controls are available in Portfolio.")
+        with top[right + 4]:
+            theme_icon = "☀️" if st.session_state.theme == "dark" else "🌙"
+            if st.button(theme_icon, key="nav_theme", help="Toggle theme"):
+                new_theme = (
+                    "light" if st.session_state.theme == "dark" else "dark"
+                )
+                st.session_state.theme = new_theme
+                st.query_params["theme"] = new_theme
+                st.rerun()
 
-        auto_save = st.toggle(
-            "Save scans to past records",
-            value=True,
-            help="Each scan stores its most liquid pairs in the local database.",
-        )
-        save_minutes = st.number_input(
-            "Record at most every (minutes)",
-            min_value=1,
-            max_value=60,
-            value=5,
-            step=1,
-            disabled=not auto_save,
-            help="Prevents auto-refresh from flooding the history database.",
-        )
-
-        st.divider()
-        auto_refresh = st.toggle(
-            "Auto-refresh",
-            value=True,
-            help="Refresh market data automatically while this tab stays open.",
-        )
-        refresh_seconds = st.slider(
-            "Refresh interval (seconds)",
-            min_value=30,
-            max_value=45,
-            value=30,
-            step=5,
-            disabled=not auto_refresh,
-        )
-
-        st.divider()
-        scan_clicked = st.button("Scan market", type="primary", width="stretch")
-        if st.button("Refresh cached data", width="stretch"):
-            load_snapshot.clear()
-            load_klines.clear()
-            st.rerun()
-
-        st.divider()
-        st.caption(
-            f"DB: `{DB_PATH.name}` · {MAX_RECORDS_PER_SCAN} rows max per scan"
-        )
+    # ------------------------------------------------------------------ #
+    # Control bar
+    # ------------------------------------------------------------------ #
+    with st.container(key="controlbar"):
+        controls = st.columns([1.1, 1.2, 1.1, 1.1, 1.3, 1.4], gap="small")
+        with controls[0]:
+            with st.popover("Market", width="stretch"):
+                market = st.selectbox(
+                    "Market",
+                    ["futures", "spot"],
+                    index=(
+                        ["futures", "spot"].index(DEFAULT_MARKET)
+                        if DEFAULT_MARKET in ["futures", "spot"]
+                        else 0
+                    ),
+                )
+                environment = st.selectbox(
+                    "Environment",
+                    ["demo", "live"],
+                    index=(
+                        ["demo", "live"].index(DEFAULT_ENVIRONMENT)
+                        if DEFAULT_ENVIRONMENT in ["demo", "live"]
+                        else 0
+                    ),
+                )
+        with controls[1]:
+            with st.popover("Filters", width="stretch"):
+                quote = st.selectbox("Quote asset", QUOTES, index=0)
+                min_volume = st.number_input(
+                    "Minimum 24h volume",
+                    min_value=0.0,
+                    value=1_000_000.0,
+                    step=500_000.0,
+                    format="%.0f",
+                )
+                top_n = st.slider(
+                    "Rows per table", min_value=5, max_value=50, value=15, step=5
+                )
+        with controls[2]:
+            with st.popover("Data", width="stretch"):
+                auto_save = st.toggle(
+                    "Save scans to past records",
+                    value=True,
+                    help="Each scan stores its most liquid pairs in the local database.",
+                )
+                save_minutes = st.number_input(
+                    "Record at most every (minutes)",
+                    min_value=1,
+                    max_value=60,
+                    value=5,
+                    step=1,
+                    disabled=not auto_save,
+                )
+        with controls[3]:
+            with st.popover("Refresh", width="stretch"):
+                auto_refresh = st.toggle(
+                    "Auto-refresh",
+                    value=True,
+                    help="Refresh market data automatically while this tab stays open.",
+                )
+                refresh_seconds = st.slider(
+                    "Refresh interval (seconds)",
+                    min_value=30,
+                    max_value=45,
+                    value=30,
+                    step=5,
+                    disabled=not auto_refresh,
+                )
+        with controls[4]:
+            st.caption(f"DB · {DB_PATH.name}")
+            st.caption(f"{MAX_RECORDS_PER_SCAN} rows / scan")
+        with controls[5]:
+            scan_clicked = st.button(
+                "Scan Market", type="primary", width="stretch"
+            )
 
     if scan_clicked:
         st.session_state.scan_nonce += 1
@@ -1652,8 +2447,6 @@ def main() -> None:
             now = time.time()
             previous = st.session_state.tick_last
             st.session_state.tick_last = now
-            # The first render (and every full rerun) only arms the timer;
-            # only a timed fragment run triggers a real refresh.
             if not should_auto_refresh(previous, now, interval_seconds):
                 return
             st.session_state.scan_nonce += 1
@@ -1668,7 +2461,7 @@ def main() -> None:
     used_stale = False
 
     try:
-        with st.spinner("Fetching Binance market data…"):
+        with st.spinner("Fetching market data…"):
             snapshot, snapshot_source = load_snapshot(
                 market, environment, quote, min_volume, nonce
             )
@@ -1687,7 +2480,6 @@ def main() -> None:
             "source": snapshot_source,
             "captured_at": captured,
         }
-
         if auto_save:
             since = seconds_since_last_save(market, environment, quote)
             due = since is None or since >= float(save_minutes) * 60
@@ -1715,8 +2507,7 @@ def main() -> None:
                 f"scan from {cached['captured_at']:%H:%M:%S} UTC."
             )
         else:
-            st.error(f"Binance request failed: {scan_error}")
-
+            st.error(f"Market request failed: {scan_error}")
         if st.button("Retry now", key="retry_scan"):
             load_snapshot.clear()
             st.session_state.scan_nonce += 1
@@ -1731,6 +2522,7 @@ def main() -> None:
             for alert in triggered:
                 st.markdown(f"- {alert['message']}")
 
+    # Status line
     status = []
     if st.session_state.last_scan_at is not None and not used_stale:
         status.append(
@@ -1745,7 +2537,10 @@ def main() -> None:
         if auto_refresh
         else "auto-refresh off"
     )
-    st.caption(" · ".join(status))
+    st.markdown(
+        f'<div class="obs-subtle"><span class="obs-live"></span>{" · ".join(status)}</div>',
+        unsafe_allow_html=True,
+    )
 
     overrides = active_dns_overrides()
     if overrides:
@@ -1755,27 +2550,51 @@ def main() -> None:
             + " (resolved over HTTPS)"
         )
 
-    scanner_tab, records_tab, average_tab, alerts_tab, account_tab = st.tabs(
-        ["Scanner", "Past records", "Moving average", "Alerts", "Account"]
-    )
+    search_query = st.session_state.get("global_search", "").strip().upper()
+    if search_query and snapshot is not None:
+        matches = snapshot[
+            snapshot["symbol"].str.contains(search_query, na=False, regex=False)
+        ]
+        with st.expander(f"Search results · {search_query}", expanded=False):
+            if matches.empty:
+                st.caption(f"No symbols found for “{search_query}”.")
+            else:
+                snapshot_table(matches.head(10).reset_index(drop=True))
 
-    with scanner_tab:
-        if snapshot is None:
-            st.info("Scan data unavailable — see the error above.")
-        else:
-            render_scanner(snapshot, top_n, quote)
+    # ------------------------------------------------------------------ #
+    # Page routing
+    # ------------------------------------------------------------------ #
+    page = st.session_state.active_page
 
-    with records_tab:
-        render_records(quote, market, environment, auto_save, snapshot)
-
-    with average_tab:
-        render_moving_average(snapshot, market, environment, quote)
-
-    with alerts_tab:
-        render_alerts(snapshot, market, environment, quote)
-
-    with account_tab:
+    if page == "Dashboard":
+        render_dashboard(snapshot, quote, market, environment, top_n)
+    elif page == "Markets":
+        render_scanner(snapshot, top_n, quote)
+    elif page == "Trade":
+        render_trade(snapshot, market, environment, quote)
+    elif page == "Watchlist":
+        render_watchlist(snapshot, quote)
+    elif page == "Portfolio":
         render_account(market, environment, quote, snapshot)
+    elif page == "Orders":
+        render_orders_page()
+    elif page == "Records":
+        render_records(quote, market, environment, auto_save, snapshot)
+    elif page == "Alerts":
+        render_alerts(snapshot, market, environment, quote)
+    elif page == "News":
+        render_news_page()
+    elif page == "Chat":
+        render_chat_page()
+    else:
+        render_dashboard(snapshot, quote, market, environment, top_n)
+
+    # Floating chat launcher
+    if st.session_state.active_page != "Chat":
+        with st.container(key="floatingchat"):
+            if st.button("🤖", key="floating_chat_btn", help="AI Trading Assistant"):
+                st.session_state.active_page = "Chat"
+                st.rerun()
 
 
 if __name__ == "__main__":
